@@ -12,6 +12,9 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
 warnings.filterwarnings("ignore")
 
 # ----------------------------- КОНСТАНТЫ -----------------------------
@@ -412,6 +415,120 @@ def optimize_and_evaluate(
         "top15": top15,
     }
 
+
+def plot_strategy_report(
+    df: pd.DataFrame,
+    metrics: Dict,
+    params: Optional[Dict] = None,
+    title_prefix: str = "",
+):
+    """
+    Строит набор аналитических графиков без разрывов на выходных.
+
+    Входные данные те же, что и раньше.
+    """
+    equity = metrics.get("equity")
+    trades = metrics.get("trades")
+    if equity is None or trades is None:
+        print("Нет данных equity/trades для построения графиков")
+        return
+
+    # ----- Преобразуем индекс в числовой формат, чтобы избежать пропусков -----
+    dates = df.index
+    x_dates = mdates.date2num(dates)                # числовая ось без разрывов
+    x_range = np.arange(len(dates))                 # равномерная шкала (если нужна)
+
+    # Настройка внешнего вида
+    plt.rcParams["figure.figsize"] = (20, 13)       # увеличенный размер
+    plt.rcParams["axes.grid"] = True
+    plt.rcParams["grid.alpha"] = 0.4
+    plt.rcParams["font.size"] = 10
+
+    fig = plt.figure()
+
+    # ---------------------- 1. Цена и сделки ---------------------------
+    ax1 = plt.subplot2grid((3, 2), (0, 0), colspan=2)
+    ax1.set_title("Цена закрытия и сигналы входа / выхода", fontsize=13, fontweight="bold")
+    ax1.plot(x_dates, df["close"], color="black", linewidth=1.2, label="Close")
+    # сделки
+    buy_trades = [t for t in trades if t["action"] == "BUY"]
+    sell_trades = [t for t in trades if "SELL" in t["action"]]
+    if buy_trades:
+        ax1.scatter(
+            [mdates.date2num(t["date"]) for t in buy_trades],
+            [t["price"] for t in buy_trades],
+            marker="^", color="limegreen", s=80, zorder=5, label="BUY"
+        )
+    if sell_trades:
+        ax1.scatter(
+            [mdates.date2num(t["date"]) for t in sell_trades],
+            [t["price"] for t in sell_trades],
+            marker="v", color="crimson", s=80, zorder=5, label="SELL"
+        )
+    ax1.plot(x_dates, df["EMA"], color="orange", linestyle="--", linewidth=1.2, alpha=0.7, label="EMA")
+    ax1.legend(fontsize=9)
+    # Форматирование оси дат
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.setp(ax1.get_xticklabels(), rotation=30, ha="right")
+
+    # ---------------------- 2. Bull Power (Elder Ray) -------------------
+    ax2 = plt.subplot2grid((3, 2), (1, 0))
+    ax2.set_title("Bull Power (Elder Ray)", fontsize=12)
+    ax2.fill_between(x_dates, 0, df["BULL_POWER"],
+                     where=df["BULL_POWER"] >= 0,
+                     color="green", alpha=0.5, label="Бычья фаза")
+    ax2.fill_between(x_dates, df["BULL_POWER"], 0,
+                     where=df["BULL_POWER"] < 0,
+                     color="red", alpha=0.5, label="Медвежья фаза")
+    ax2.axhline(y=0, color="grey", linewidth=0.8, linestyle="--")
+    if params and "bull_threshold" in params:
+        ax2.axhline(y=params["bull_threshold"], color="blue", linewidth=1,
+                    linestyle=":", label=f'Порог {params["bull_threshold"]}')
+    ax2.legend(fontsize=8)
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax2.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.setp(ax2.get_xticklabels(), rotation=30, ha="right")
+
+    # ---------------------- 3. Aroon Up / Down --------------------------
+    ax3 = plt.subplot2grid((3, 2), (1, 1))
+    ax3.set_title("Aroon Up / Down", fontsize=12)
+    ax3.plot(x_dates, df["AROON_UP"], color="green", linewidth=1, label="Aroon Up")
+    ax3.plot(x_dates, df["AROON_DOWN"], color="red", linewidth=1, label="Aroon Down")
+    ax3.axhline(y=50, color="grey", linestyle="--", linewidth=0.7)
+    ax3.legend(fontsize=8)
+    ax3.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax3.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.setp(ax3.get_xticklabels(), rotation=30, ha="right")
+
+    # ---------------------- 4. Кривая эквити и просадка (добавим) -------
+    ax4 = plt.subplot2grid((3, 2), (2, 0), colspan=2)
+    ax4.set_title("Кривая эквити и максимальная просадка", fontsize=13, fontweight="bold")
+    ax4.plot(x_dates, equity, color="dodgerblue", linewidth=1.5, label="Эквити")
+    peak = np.maximum.accumulate(equity)
+    drawdown = (equity - peak) / peak * 100
+    ax4_twin = ax4.twinx()
+    ax4_twin.fill_between(x_dates, 0, drawdown, color="salmon", alpha=0.3, label="Просадка %")
+    ax4_twin.set_ylabel("Просадка, %", color="darkred")
+    ax4_twin.tick_params(axis="y", labelcolor="darkred")
+    ax4_twin.legend(loc="upper right")
+    ax4.set_ylabel("Эквити, руб.", color="dodgerblue")
+    ax4.legend(loc="upper left")
+    ax4.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax4.xaxis.set_major_locator(mdates.AutoDateLocator())
+    plt.setp(ax4.get_xticklabels(), rotation=30, ha="right")
+
+    # Общий заголовок
+    param_str = ""
+    if params:
+        param_str = f" | EMA={params.get('ema_period','?')}, Aroon={params.get('aroon_period','?')}, BullThr={params.get('bull_threshold','?')}, ATRmult={params.get('stop_atr_mult','?')}"
+    fig.suptitle(f"{title_prefix} {metrics.get('total_return_%','')}% | Sharpe {metrics.get('sharpe','')}{param_str}",
+                 fontsize=14, fontweight="bold")
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(f"{title_prefix}.png", dpi=200, bbox_inches="tight")
+
+
 # ----------------------------- ПРИМЕР ЗАПУСКА -----------------------------
 if __name__ == "__main__":
     # Яндекс
@@ -421,15 +538,32 @@ if __name__ == "__main__":
     df_test = load_candles("data/yandex_candles_test.json")
     res_yandex = optimize_and_evaluate(df_train, df_test, name="Яндекс")
 
-    # Другие инструменты (пример)
-    # df_train_sber = load_candles("data/candles_train.json")
-    # df_test_sber = load_candles("data/candles_test.json")
-    # res_sber = optimize_and_evaluate(df_train_sber, df_test_sber, name="Сбер")
+    # ------------------- ПОСТРОЕНИЕ ГРАФИКОВ -------------------
+    best = res_yandex["best_params"]
 
-    # df_train_sber = load_candles("data/ttech_candles_train.json")
-    # df_test_sber = load_candles("data/ttech_candles_test.json")
-    # res_sber = optimize_and_evaluate(df_train_sber, df_test_sber, name="Т-Технологии")
+    # Извлекаем параметры, нужные для расчёта индикаторов
+    ind_params = {
+        "ema_period": best["ema_period"],
+        "aroon_period": best["aroon_period"],
+        "use_vol_filter": best["use_vol_filter"],
+    }
 
-    # df_train_sber = load_candles("data/ozon_candles_train.json")
-    # df_test_sber = load_candles("data/ozon_candles_test.json")
-    # res_sber = optimize_and_evaluate(df_train_sber, df_test_sber, name="Озон")
+    # Пересчитываем индикаторы на обучающей и тестовой выборках
+    df_train_ind = add_indicators(df_train, **ind_params)
+    df_test_ind  = add_indicators(df_test,  **ind_params)
+
+    # График для оптимизационного периода
+    plot_strategy_report(
+        df_train_ind,
+        res_yandex["opt_metrics"],
+        params=best,
+        title_prefix="ОПТИМИЗАЦИЯ"
+    )
+
+    # График для тестового периода
+    plot_strategy_report(
+        df_test_ind,
+        res_yandex["test_metrics"],
+        params=best,
+        title_prefix="ТЕСТИРОВАНИЕ"
+    )
